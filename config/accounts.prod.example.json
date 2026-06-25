@@ -1,0 +1,39 @@
+{
+  "shein": [
+    "A1-示例账号"
+  ],
+  "shein_main_12": [
+    "A1-示例账号"
+  ],
+  "pop": [
+    "A1POP-示例账号"
+  ],
+  "shein_f1_f20": [
+    "F1-示例账号"
+  ],
+  "temu": [
+    {
+      "label": "B1/B2/B3-示例主账号",
+      "platform_id": 149,
+      "siteId": 391,
+      "store_username": "demo-store-user"
+    }
+  ],
+  "aliexpress": [
+    "D1-示例账号"
+  ],
+  "tiktok": [
+    "C1-示例账号"
+  ],
+  "pdd": [],
+  "douyin": [],
+  "shein_a1b_a4b": [
+    "A1B-示例账号"
+  ],
+  "shein_a1y_a4y": [
+    "A1Y-示例账号"
+  ],
+  "tiktok_email": [
+    "E1-示例邮箱账号"
+  ]
+}

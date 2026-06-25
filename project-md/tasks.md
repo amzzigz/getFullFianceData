@@ -1,0 +1,80 @@
+# 当前任务
+
+## 2026-06-25
+
+- [x] 修复 review 红灯：SHEIN 识别 `Set changed size during iteration` / `No such target id`，普通共享登录与申合首次读取 `latest_tab` 最多重试 3 次；未扩展为跨平台框架。
+- [x] 为普通 SHEIN/POP/A1B 共享登录接入 DrissionPage 原生标签页恢复：`existing_only()`、`reconnect(wait=1)`、按 `geiwohuo.com` 重找标签页，最多 3 次。
+- [x] 为 A1Y-A4Y 申合报账单启动和浏览器 fetch 接入同类恢复，替换后的 `shenhe888.com` 标签页由后续列表/导出请求继续复用。
+- [x] 保持 SHEIN 现有账号批处理、cookie 复用、鉴权锁和 stopBrowser 清理不变；定向回归 40 项通过。
+- [x] 修复首版 SHEIN 重连的 target 竞态：移除普通 SHEIN 和申合的 `new_tab()`，统一复用紫鸟 `latest_tab`；新增不创建 target 回归测试，全量 165 项通过。
+- [x] 分析 `run_20260625_002325.log`：确认上一版没有浏览器并行重叠，但失败账号释放尝试级锁后会被其他账号插队，八账号长批次仍形成高频交错 stop/start 并累积触发断联。
+- [x] TEMU 资金明细调度强制单 worker，确保账号内重试连续完成；`stopBrowser` 返回后锁内冷却 3 秒，避免异步关闭尚未完成就启动下一环境。
+- [x] 审查修复：关闭确认改为轮询本次 `debuggingPort`，停止失败会令任务失败并阻断后续 TEMU 启动；混合平台只锁 TEMU 作业，不再全局降为单 worker。
+- [x] 分析 `run_20260625_005750.log`：纯串行下第一个账号仍可在首次控制绑定阶段断联；TEMU 改为复用 `latest_tab`，断联时同端口重绑而不是立即重启浏览器。
+- [x] 按 DrissionPage 4.1.1.4 官方语义修正断联恢复：`existing_only()` 接管浏览器，Tab 仍存在时调用 `reconnect(wait=1)`，target 被替换时重新选择 TEMU Tab。
+- [x] 补齐 TEMU 首次标签接管竞态：首次 `latest_tab` 获取失败时有限重试，并识别 `Set changed size during iteration` / `No such target id`。
+
+## 2026-06-24
+
+- [x] 修复普通 TK 共享浏览器恢复审查问题：`stopBrowser` 验证返回并最多尝试 2 次；共享启动失败的最终补跑按账号批次复用一个浏览器，不再逐模块重复启动；清理失败日志不输出 `browserOauth`。
+- [x] 修复普通 TK 总调 C1 共享浏览器启动阶段断联：返回上下文前主动 `stopBrowser`，账号级重试共享浏览器初始化，最终失败转成真实模块结果供串行补跑识别；新增 4 项回归测试，完整测试 `143 passed`。
+- [x] 对比部署机与本机 E1E2 日志：确认两边均为账号级串行，部署机失败集中在 Bills 页尚未稳定时执行 `run_js`，不是账号并发回归。
+- [x] 完成 E1E2 DrissionPage 原生就绪改造：监听 Seller API、使用 URL/document 原生等待、直接复用监听包 seller 信息；移除固定 sleep 和自写 `readyState` 连续轮询。
+- [x] 保留兼容降级：监听不可用或超时回退现有 `get_seller_info()`；浏览器请求遇到 DrissionPage `页面被刷新` 时最多短重试 3 次。
+- [x] 本机真实紫鸟验证：E1/E2 均打印 `Seller API 监听已就绪`，E1 无数据、E2 下载成功、失败数 0。
+- [x] 本机实跑验证：E1 无数据、E2 成功下载、失败数 0；部署机仍需更新后复测。
+- [x] 修复 TEMU 总调 `max_workers=2` 时登录页断联：TEMU 从 `startBrowser` 到卖家中心 `userInfo` 会话验证完成均受 `runtime.ziniu_auth_concurrency` 控制，之后资金明细导出仍可按任务并发执行。
+- [x] 修复 TEMU 启动阶段断联后浏览器残留：即使 `start_temu_browser()` 尚未返回上下文，也会使用已取得的 `browserOauth` 调用 `stopBrowser` 并关闭页面，避免失败补跑继续连接断开的旧环境。
+- [x] 根据 `run_20260624_223608.log` 修正 TEMU 锁范围：登录后释放槽仍会让两个账号浏览器在导出期重叠并互相断联；现改为单账号从启动、导出到关闭端到端串行。
+- [x] 修复 TEMU 清理误判：`stopBrowser` 检查 `statusCode=0`，失败等待后最多重试 2 次；新增全程持锁和停止重试回归测试。
+- [x] 修复 A1Y-A4Y 申合报账单总调并发断联：申合从 `startBrowser` 到目标页面确认均进入统一紫鸟鉴权槽；返回上下文前断联或超时会主动停止并关闭浏览器，避免补跑继续接管残留环境。
+- [x] 修正上一版申合锁范围过短造成的稳定断联：部署机验证显示目标页面确认后立即释放槽位，会让下一账号启动紫鸟并打断前一账号导出；现改为每个申合账号从启动到关闭浏览器端到端串行。
+- [!] `run_20260624_142547.log` 仍显示申合账号交叠启动，运行行为对应 `1b09b4a` 之前版本；待部署机确认 HEAD 更新到最新提交后重新验证 A4Y。
+- [x] 按用户确认将 A21POP/A23POP `pop_balance_records` 币种 `info: []` 归类为模块未启用/无数据，不再进行初次重试和最终失败补跑。
+
+## 2026-06-22
+
+- [x] 排查 SHEIN/POP 总调中途弹窗后批量 `account not found in browserList`：日志显示先出现 `page disconnected` 和 `16851 Read timed out`，随后紫鸟重启后 `browserList=[]`，导致后续账号被误报为未找到。
+- [x] 修复紫鸟空环境列表误判：`getBrowserList statusCode=0` 但 `browserList=[]` 不再按账号缺失报 `account not found`；账号匹配阶段输出客户端/成员态异常提示。
+- [x] 对比稳定版 `b7262e1c` 排查 SHEIN 总调断联回归：差异集中在后续新增的紫鸟安装目录接管逻辑；修复为优先使用当前正在运行的紫鸟进程路径，配置目录只作为端口不可用时的自启兜底。
+- [x] 用户新环境确认：`dd5b43a` 之后的 SHEIN 总调模式效率提升接近一倍，输出文件无问题；已标注为当前 SHEIN 最稳定导出模式。
+- [x] 复核其他会话 E1E2 稳定 SHA `7dc6ee8`：GitHub 仍可按 SHA fetch，但当前 `main` 已回到 `dd5b43a`；差异只在 `tools/ziniu_auth_login_extracted.py`，没有改 E1E2 导出模块。
+- [x] 合并 E1E2 稳定点：保留 SHEIN 需要的“运行中紫鸟进程路径优先”，但健康检查不再因为 `browserList=[]` 主动杀紫鸟重启，避免低配/占线环境下扩大断联。
+- [x] 接手并梳理 TikTok/E1E2 当前实现：确认普通 TikTok 与 E1E2 分平台、分账号源、分 runner。
+- [x] 核对 E1/E2 邮箱登录分支在 `tools/ziniu_auth_login_extracted.py` 中仍存在，且测试覆盖邮箱切换、密码/按钮状态和 full xpath。
+- [x] 排查 E1E2 运行不稳定：两个账号通过 `run_tasks()` 并发执行，`start_tiktok_browser()` 未受 `runtime.ziniu_auth_concurrency=1` 保护，导致紫鸟本地 `startBrowser` 并发超时、页面刷新、页面断开。
+- [x] 修复 E1E2 稳定性：TikTok 直连浏览器启动复用统一紫鸟鉴权并发槽；E1 `22008000/暂无数据可导出` 归类为 `no_data`，不再触发失败补跑。
+- [x] 根据用户补充的低配环境变量收紧：E1E2 两个账号端到端强制串行执行，dry-run/运行计划显示实际 `并发=1`。
+- [x] 现场验证 2026-06-22 11:01：E1 无数据、E2 成功下载，失败数 0，日志显示 E1 结束后才启动 E2。
+- [x] 修复 TEMU B2 默认店铺上下文异常导致的控制链路不稳：TEMU 启动后获取/筛选店铺列表，先固定第一个目标店铺 `mallid` 并重新进入资金明细页，再开始资金明细接口导出；TEMU `startBrowser` 也纳入统一紫鸟鉴权并发槽。
+
+## 2026-06-16
+
+- [x] 排查 A21POP/A23POP 的 `pop_balance_records` 报 `未能获取币种`。
+- [x] 从生产 TEMU 账号池剔除 `B2/B3/B5/B6/B7运营账号2`。
+- [x] 修复 POP 提现明细误写入 SHEIN 提现明细目录的问题。
+- [x] 修复新环境 SHEIN 总调中主站登录已成功但 GSFS/MWS 子系统尚未完成 SSO，导致 `20302 子系统登录重定向` 的不稳定问题。
+- [x] 修复新环境紫鸟 `startBrowser` 对 `browserId`/`browserOauth` 参数更严格导致申合报账单启动失败的问题。
+- [x] 用户确认 A21POP/A23POP 资金流水模块未启用，币种为空归类为业务无数据。
+
+## 2026-06-17
+
+- [x] 核验 TEMU 2026-05 月度资金明细批量导出完整性：除 B21/B22 紫鸟名额占线失败外，成功账号里也存在缺文件；终端总计 `输出文件=18` 是 `output_path` 只保留前三个路径造成的展示口径偏小，不等同于真实文件数。
+- [!] 当前输出目录实有 64 个 xlsx；日志成功账号按“店铺数 × 4 区域”应有 92 个，缺 28 个。主要缺失：B27/B28/B29 组 12 个、B30/B31/B32 组 12 个、B1 ANDREILEE 缺卖家中心/全球、B2 FaceTrue 缺卖家中心/全球。
+- [!] 已有文件中存在正常“无账单提示/仅表头空明细”，应与缺文件区分。
+- [x] 修复 TEMU 批量导出“假完成”防线：汇总优先读取 `data.outputs` 完整路径；TEMU 成功返回前校验声明输出文件真实存在；卖家中心下载遇到 `导出任务未完成` 时按配置轮询。
+- [x] 修复新环境 SHEIN 总调并发 2 时紫鸟本地 `16851/startBrowser` 偶发超时：保留任务并发，但串行化 `auth_login` 底层启动浏览器段。
+- [x] 将紫鸟鉴权并发改为可配置：`runtime.ziniu_auth_concurrency` 默认 1，高配稳定环境可显式设为 2。
+- [x] 优化 SHEIN/POP/A1B 账号批处理：同账号只做一次共享紫鸟浏览器登录，串行 warm-up 涉及的子系统页面后提取一次 cookie，再按 `runtime.account_module_concurrency` 并发执行账号内模块导出。
+
+## 2026-06-18
+
+- [x] 针对新环境 SHEIN 总调 `与页面的连接已断开`：共享登录阶段识别页面断开后立即失败并触发账号级重试；共享鉴权最终失败时降级回模块级鉴权，避免一次共享登录失败拖死同账号所有模块。
+- [x] 针对新环境 SHEIN 登录页反复刷新但未点击登录：共享登录 warm-up 每个目标页只导航一次；停在登录页时不再循环刷新目标页，且登录页 URL 不再被 cookie 残留误判为登录成功。
+- [x] 针对新环境 SHEIN 降级后仍不稳定：模块级鉴权成功后写入账号级 cookie 缓存，后续同账号不同目标页不再重复开紫鸟；共享鉴权失败后的模块级降级强制串行执行。
+- [x] 增加总调末尾失败补跑：正常采集结束后按 `runtime.final_failed_rerun_count` 串行补跑仍失败的任务，无数据项不补跑，补跑结果替换最终汇总结果。
+
+## 2026-06-19
+
+- [x] 增加每次运行本地日志：总调启动后将控制台 stdout/stderr 同步写入 `logs/runs/run_*.log`，默认开启，可通过 `runtime.save_run_log=false` 关闭。
+- [x] 修复手动杀掉紫鸟 V6 后总调无法自动重启：将 `software.ziniu_install_dir`、host、port 传给鉴权 helper，并让 helper 启动紫鸟时使用配置端口；补充 F/E 盘紫鸟安装目录候选。

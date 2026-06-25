@@ -1,0 +1,47 @@
+# Runtime output
+output/
+logs/
+captures/
+downloads/
+*.log
+
+# Local secrets and machine-only config
+config/local.json
+config/prod.json
+config/accounts.local.json
+config/accounts.prod.json
+config/secrets.*.json
+!config/*.example.json
+!config/secrets.example.json
+*.secret.json
+*.local.secret.json
+tools/*账号池*.txt
+tools/A1Y-A4Y.txt
+tools/E1-E2.txt
+tools/速卖通.txt
+tools/test_ziniu_auth_hardcoded.py
+
+# Large/private capture files
+har/
+*.har
+docs/手动下载/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Packaging
+build/
+dist/
+*.spec
+
+# Editors / OS
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,43 @@
+{
+  "environment": "local",
+  "paths": {
+    "output_root": "output",
+    "log_root": "logs",
+    "download_root": "output/downloads",
+    "desktop_auth_path": "tools/ziniu_auth_login_extracted.py",
+    "account_mapping_file": "tools/shein账号池.txt",
+    "aliexpress_account_file": "tools/速卖通.txt",
+    "tiktok_account_file": "tools/tk账号池.txt"
+  },
+  "software": {
+    "chrome_path": "",
+    "ziniu_install_dir": "",
+    "ziniu_webdriver_host": "127.0.0.1",
+    "ziniu_webdriver_port": 16851
+  },
+  "runtime": {
+    "python_min_version": "3.11",
+    "max_workers": 3,
+    "ziniu_auth_concurrency": 1,
+    "account_module_concurrency": 2,
+    "final_failed_rerun_count": 1,
+    "login_timeout_seconds": 30,
+    "request_timeout_seconds": 60,
+    "retry_count": 1,
+    "keep_browser_open": false,
+    "save_capture_files": true,
+    "save_run_log": true,
+    "save_run_summary": true
+  },
+  "platforms": {
+    "default_run": [],
+    "enabled": {
+      "shein": true,
+      "temu": true,
+      "aliexpress": true,
+      "tiktok": true,
+      "pdd": false,
+      "douyin": false
+    }
+  }
+}
