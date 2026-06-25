@@ -214,6 +214,64 @@ def test_start_temu_browser_retries_chromium_attach_target_race(monkeypatch, tmp
     assert sleeps == [1, 3]
 
 
+def test_start_temu_browser_redirects_agentseller_home_to_seller_bill(monkeypatch, tmp_path) -> None:
+    navigations: list[str] = []
+
+    class FakeOptions:
+        def set_local_port(self, port):
+            return self
+
+        def existing_only(self, on_off=True):
+            return self
+
+    class FakePage:
+        url = "https://agentseller.temu.com/"
+
+        def get(self, url):
+            navigations.append(url)
+            self.url = url
+
+    page = FakePage()
+
+    class FakeBrowser:
+        def __init__(self, options):
+            self.latest_tab = page
+
+    helper = SimpleNamespace(
+        ensure_client_online=lambda: (True, ""),
+        build_start_browser_payload=lambda info: {"action": "startBrowser"},
+        send_http=lambda payload: {"statusCode": "0", "browserOauth": "oauth", "debuggingPort": 12345},
+        _handle_click_for_platform=lambda current_page, *args, **kwargs: current_page,
+        _log=lambda message: None,
+    )
+    times = iter([0, 0, 1, 46])
+    monkeypatch.setitem(
+        sys.modules,
+        "DrissionPage",
+        SimpleNamespace(Chromium=FakeBrowser, ChromiumOptions=FakeOptions),
+    )
+    monkeypatch.setattr(temu_fund_details, "load_ziniu_helper", lambda auth_path: helper)
+    monkeypatch.setattr(temu_fund_details, "resolve_temu_shop_info", lambda helper, account: ({"browserId": "1"}, ""))
+    monkeypatch.setattr(
+        temu_fund_details,
+        "temu_seller_session_ready",
+        lambda current_page: current_page.url == temu_fund_details.SELLER_BILL_URL,
+    )
+    monkeypatch.setattr(temu_fund_details.time, "time", lambda: next(times))
+    monkeypatch.setattr(temu_fund_details.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(temu_fund_details, "_TEMU_START_BLOCK_REASON", "")
+
+    ctx = temu_fund_details.start_temu_browser(
+        "B27/B28/B29-主账号-CT",
+        tmp_path / "auth.py",
+        1,
+        auth_slot_held=True,
+    )
+
+    assert ctx.page is page
+    assert navigations == [temu_fund_details.SELLER_BILL_URL]
+
+
 def test_browser_post_json_recovers_context_page_during_export() -> None:
     class DisconnectedPage:
         def run_js(self, script):

@@ -353,6 +353,9 @@ def _start_temu_browser_unlocked(account_name: Any, auth_path: Path, timeout_sec
                     except Exception as exc:
                         if is_temu_tab_connection_error(exc):
                             raise
+                elif "temu.com" in lower_url and "authentication" not in lower_url and "login" not in lower_url:
+                    page.get(SELLER_BILL_URL)
+                    continue
                 elif "temu.com" not in lower_url:
                     page.get(SELLER_BILL_URL)
                 try:

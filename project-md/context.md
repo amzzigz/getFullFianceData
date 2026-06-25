@@ -61,6 +61,7 @@
 ## TEMU 资金明细批量导出口径
 
 - TEMU 卖家中心登录页默认停在“扫码登录”，此时页面没有手机号和密码输入框。模拟登录必须先确认“手机号登录”Tab 已切换成功；全字段均为 `False` 表示登录表单尚未出现，不是保存的账号密码未自动填充。
+- 部分账号（已确认 B27/B28/B29 主账号）启动后默认落在 `https://agentseller.temu.com/`。该页面只能说明全球站已登录，不代表卖家中心资金明细会话就绪；启动流程必须导航回 `seller.kuajingmaihuo.com/labor/bill` 再验证 `userInfo`。
 - `temu_fund_details` 每个店铺理论输出 4 个区域文件：卖家中心、全球、欧区、美国。
 - 当前 `TaskResult.output_path` 只保留前三个输出路径并追加 `...`，所以终端汇总里的 `输出文件` 不是实际文件总数。
 - 判断完整性应以输出目录实际 xlsx、capture/run summary 的 `data.outputs` 或 `mall_results.regionResults` 为准，并把“无账单提示/仅表头空明细”和“文件缺失”分开说明。
