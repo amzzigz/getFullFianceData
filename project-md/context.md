@@ -60,6 +60,7 @@
 
 ## TEMU 资金明细批量导出口径
 
+- TEMU 卖家中心登录页默认停在“扫码登录”，此时页面没有手机号和密码输入框。模拟登录必须先确认“手机号登录”Tab 已切换成功；全字段均为 `False` 表示登录表单尚未出现，不是保存的账号密码未自动填充。
 - `temu_fund_details` 每个店铺理论输出 4 个区域文件：卖家中心、全球、欧区、美国。
 - 当前 `TaskResult.output_path` 只保留前三个输出路径并追加 `...`，所以终端汇总里的 `输出文件` 不是实际文件总数。
 - 判断完整性应以输出目录实际 xlsx、capture/run summary 的 `data.outputs` 或 `mall_results.regionResults` 为准，并把“无账单提示/仅表头空明细”和“文件缺失”分开说明。
@@ -75,3 +76,4 @@
 - TEMU 启动后使用 `ChromiumOptions.existing_only()` 接管紫鸟已经打开的浏览器，并优先使用现有 `latest_tab`，不再立即创建新标签页。
 - DrissionPage 页面连接断开时最多恢复 3 次：先调用当前 Tab 的官方 `reconnect(wait=1)`；原 target 已销毁时按 `kuajingmaihuo.com` / `temu.com` 重新枚举现有标签页。浏览器级连接失败仍进入原有 stop/start 重试。
 - 紫鸟初始化期间首次读取 `latest_tab` 也可能与 target 销毁/替换竞态；TEMU 对 `Set changed size during iteration` 和 `No such target id` 进行最多 3 次首次接管重试，再进入正常登录循环。
+- TEMU 标签页恢复不再只覆盖登录阶段：店铺上下文切换、接口 `run_js(fetch)`、区域授权导航和浏览器文件下载统一通过账号级 `ctx.page` 执行；断联恢复后立即更新 `ctx.page`，后续步骤继续使用替代 Tab。业务阶段单浏览器累计最多恢复 3 次。

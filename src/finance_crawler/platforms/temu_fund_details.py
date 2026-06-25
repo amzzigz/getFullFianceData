@@ -45,6 +45,7 @@ class TemuBrowserContext:
     page: Any
     browser_oauth: str
     debug_port: int = 0
+    reconnect_attempts: int = 0
 
 
 _TEMU_START_BLOCK_REASON = ""
@@ -192,7 +193,12 @@ def get_initial_temu_tab(browser: Any, debug_port: int, max_attempts: int = 3) -
             time.sleep(1)
 
 
-def recover_temu_tab(browser: Any, page: Any, disconnect_error: Exception) -> Any:
+def recover_temu_tab(
+    browser: Any,
+    page: Any,
+    disconnect_error: Exception,
+    expected_hosts: tuple[str, ...] = (),
+) -> Any:
     reconnect_error: Exception = disconnect_error
     reconnect = getattr(page, "reconnect", None)
     if callable(reconnect):
@@ -205,7 +211,8 @@ def recover_temu_tab(browser: Any, page: Any, disconnect_error: Exception) -> An
                 raise
             reconnect_error = exc
 
-    for url_hint in ("kuajingmaihuo.com", "temu.com"):
+    url_hints = tuple(dict.fromkeys((*expected_hosts, "kuajingmaihuo.com", "temu.com")))
+    for url_hint in url_hints:
         try:
             tabs = browser.get_tabs(url=url_hint)
         except Exception as exc:
@@ -226,6 +233,69 @@ def recover_temu_tab(browser: Any, page: Any, disconnect_error: Exception) -> An
         reconnect_error = exc
 
     raise reconnect_error
+
+
+def attach_temu_browser(
+    chromium_factory: Any,
+    options_factory: Any,
+    debug_port: int,
+    max_attempts: int = 3,
+) -> tuple[Any, Any]:
+    attempts = max(1, max_attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            options = options_factory().set_local_port(debug_port).existing_only()
+            browser = chromium_factory(options)
+            return browser, get_initial_temu_tab(browser, debug_port)
+        except Exception as exc:
+            if not is_temu_tab_connection_error(exc) or attempt >= attempts:
+                raise
+            print(
+                f"[TEMU] 浏览器控制端正在切换，等待重新接管 "
+                f"{attempt}/{attempts} | debug_port={debug_port}",
+                flush=True,
+            )
+            time.sleep(1)
+
+
+def run_temu_page_operation(
+    ctx: Any,
+    operation: Any,
+    expected_hosts: tuple[str, ...] = (),
+) -> Any:
+    while True:
+        try:
+            return operation(ctx.page)
+        except Exception as exc:
+            if not is_temu_tab_connection_error(exc):
+                raise
+            reconnect_error = exc
+            while True:
+                reconnect_attempts = int(getattr(ctx, "reconnect_attempts", 0) or 0) + 1
+                setattr(ctx, "reconnect_attempts", reconnect_attempts)
+                if reconnect_attempts > 3:
+                    raise reconnect_error
+                print(
+                    f"[TEMU] 业务页面连接断开，尝试恢复 "
+                    f"{reconnect_attempts}/3 | debug_port={getattr(ctx, 'debug_port', 0)}",
+                    flush=True,
+                )
+                try:
+                    ctx.page = recover_temu_tab(
+                        ctx.browser,
+                        ctx.page,
+                        reconnect_error,
+                        expected_hosts=expected_hosts,
+                    )
+                    break
+                except Exception as recover_exc:
+                    if not is_temu_tab_connection_error(recover_exc):
+                        raise
+                    reconnect_error = recover_exc
+
+
+def is_temu_page_context(value: Any) -> bool:
+    return hasattr(value, "page") and hasattr(value, "browser")
 
 
 def _start_temu_browser_unlocked(account_name: Any, auth_path: Path, timeout_seconds: int) -> TemuBrowserContext:
@@ -257,9 +327,7 @@ def _start_temu_browser_unlocked(account_name: Any, auth_path: Path, timeout_sec
     try:
         from DrissionPage import Chromium, ChromiumOptions
 
-        options = ChromiumOptions().set_local_port(debug_port).existing_only()
-        browser = Chromium(options)
-        page = get_initial_temu_tab(browser, debug_port)
+        browser, page = attach_temu_browser(Chromium, ChromiumOptions, debug_port)
         end_at = time.time() + max(45, timeout_seconds)
         reconnect_attempts = 0
         while time.time() < end_at:
@@ -412,23 +480,47 @@ def close_temu_browser(ctx: TemuBrowserContext | None) -> None:
         raise RuntimeError("TEMU 浏览器未确认停止，已阻断后续启动。")
 
 
+def run_page_or_context(
+    page_or_ctx: Any,
+    operation: Any,
+    expected_hosts: tuple[str, ...] = (),
+) -> Any:
+    if is_temu_page_context(page_or_ctx):
+        return run_temu_page_operation(page_or_ctx, operation, expected_hosts)
+    return operation(page_or_ctx)
+
+
 def ensure_seller_page(ctx: TemuBrowserContext) -> None:
-    current_url = str(getattr(ctx.page, "url", "") or "").lower()
+    current_url = str(
+        run_temu_page_operation(
+            ctx,
+            lambda page: getattr(page, "url", ""),
+            ("seller.kuajingmaihuo.com",),
+        )
+        or ""
+    ).lower()
     if "seller.kuajingmaihuo.com" in current_url and "login" not in current_url:
         return
-    ctx.page.get(SELLER_BILL_URL)
+    run_temu_page_operation(
+        ctx,
+        lambda page: page.get(SELLER_BILL_URL),
+        ("seller.kuajingmaihuo.com",),
+    )
     time.sleep(2)
 
 
-def set_seller_mall_context(page: Any, mall_id: int | str) -> None:
+def set_seller_mall_context(page_or_ctx: Any, mall_id: int | str) -> None:
     value = str(mall_id)
-    cookies = page.run_js(
-        f"""
+    script = f"""
         localStorage.setItem("agentseller-mall-info-id", "{value}");
         document.cookie = "mallid={value}; path=/; domain=.kuajingmaihuo.com; SameSite=Lax";
         document.cookie = "mallid={value}; path=/; SameSite=Lax";
         return document.cookie;
         """
+    cookies = run_page_or_context(
+        page_or_ctx,
+        lambda page: page.run_js(script),
+        ("seller.kuajingmaihuo.com",),
     )
     if f"mallid={value}" not in str(cookies or ""):
         raise RuntimeError(f"TEMU 切换店铺 Cookie 失败: mallId={value}")
@@ -436,8 +528,12 @@ def set_seller_mall_context(page: Any, mall_id: int | str) -> None:
 
 def prime_seller_mall_context(ctx: TemuBrowserContext, mall_id: int | str) -> None:
     ensure_seller_page(ctx)
-    set_seller_mall_context(ctx.page, mall_id)
-    ctx.page.get(SELLER_BILL_URL)
+    set_seller_mall_context(ctx, mall_id)
+    run_temu_page_operation(
+        ctx,
+        lambda page: page.get(SELLER_BILL_URL),
+        ("seller.kuajingmaihuo.com",),
+    )
     time.sleep(2)
 
 
@@ -445,7 +541,7 @@ def js_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def browser_post_json(page: Any, url: str, payload: dict[str, Any], mall_id: int | str | None = None) -> dict[str, Any]:
+def browser_post_json(page_or_ctx: Any, url: str, payload: dict[str, Any], mall_id: int | str | None = None) -> dict[str, Any]:
     headers = {"content-type": "application/json"}
     if mall_id not in (None, ""):
         headers["mallid"] = str(mall_id)
@@ -465,12 +561,19 @@ def browser_post_json(page: Any, url: str, payload: dict[str, Any], mall_id: int
     """
     last_error = ""
     result = None
+    expected_host = urlparse(url).netloc
     for attempt in range(1, 4):
         try:
-            result = page.run_js(script)
+            result = run_page_or_context(
+                page_or_ctx,
+                lambda page: page.run_js(script),
+                (expected_host,) if expected_host else (),
+            )
             break
         except Exception as exc:
             last_error = str(exc)
+            if is_temu_page_context(page_or_ctx) and is_temu_tab_connection_error(exc):
+                raise
             if attempt >= 3:
                 raise
             time.sleep(2)
@@ -495,7 +598,9 @@ def temu_seller_session_ready(page: Any) -> bool:
         data = browser_post_json(page, USER_INFO_URL, {}, None)
         ensure_success(data, USER_INFO_URL)
         return True
-    except Exception:
+    except Exception as exc:
+        if is_temu_tab_connection_error(exc):
+            raise
         return False
 
 
@@ -618,7 +723,7 @@ def wait_history_record(
     )
 
 
-def browser_download_file(page: Any, file_url: str, output_path: Path) -> int:
+def browser_download_file(page_or_ctx: Any, file_url: str, output_path: Path) -> int:
     script = f"""
         return (async () => {{
             const r = await fetch({js_json(file_url)}, {{credentials: 'include'}});
@@ -640,12 +745,19 @@ def browser_download_file(page: Any, file_url: str, output_path: Path) -> int:
     """
     result = None
     last_error = ""
+    expected_host = urlparse(file_url).netloc
     for attempt in range(1, 4):
         try:
-            result = page.run_js(script)
+            result = run_page_or_context(
+                page_or_ctx,
+                lambda page: page.run_js(script),
+                (expected_host,) if expected_host else (),
+            )
             break
         except Exception as exc:
             last_error = str(exc)
+            if is_temu_page_context(page_or_ctx) and is_temu_tab_connection_error(exc):
+                raise
             if attempt >= 3:
                 raise
             time.sleep(2)
@@ -684,9 +796,9 @@ def build_agent_authorization_url(base: str, target_url: str, unique_id: str, co
     return f"{base}/main/authentication?{urlencode({'redirectUrl': target_url, 'uniqueId': unique_id, 'asCode': code})}"
 
 
-def obtain_agent_code(page: Any, base: str, mall_id: int | str) -> str:
+def obtain_agent_code(page_or_ctx: Any, base: str, mall_id: int | str) -> str:
     data = ensure_success(
-        browser_post_json(page, OBTAIN_CODE_URL, {"redirectUrl": f"{base}/main/authentication"}, mall_id),
+        browser_post_json(page_or_ctx, OBTAIN_CODE_URL, {"redirectUrl": f"{base}/main/authentication"}, mall_id),
         OBTAIN_CODE_URL,
     )
     code = str((data.get("result") or {}).get("code") or "")
@@ -712,39 +824,61 @@ def open_agent_target(
     target_url = f"{base}/labor/bill-download-with-detail?params={quote(params, safe='')}&sign={quote(sign, safe='')}"
     link_url = f"{SELLER_BASE}/link-agent-seller?region={target['region']}&targetUrl={quote(target_url, safe='')}"
     ensure_seller_page(ctx)
-    set_seller_mall_context(ctx.page, mall_id)
+    set_seller_mall_context(ctx, mall_id)
     candidates = [link_url, target_url]
     if unique_id:
-        code = obtain_agent_code(ctx.page, base, mall_id)
+        code = obtain_agent_code(ctx, base, mall_id)
         candidates.insert(0, build_agent_authorization_url(base, target_url, unique_id, code))
     for candidate_url in candidates:
-        ctx.page.get(candidate_url)
+        candidate_host = urlparse(candidate_url).netloc
+        run_temu_page_operation(
+            ctx,
+            lambda page, url=candidate_url: page.get(url),
+            tuple(filter(None, (candidate_host, expected_host))),
+        )
         end_at = time.time() + 35
         while time.time() < end_at:
-            current_url = str(getattr(ctx.page, "url", "") or "")
+            current_url = str(
+                run_temu_page_operation(
+                    ctx,
+                    lambda page: getattr(page, "url", ""),
+                    (expected_host,),
+                )
+                or ""
+            )
             lower_url = current_url.lower()
             current_host = urlparse(current_url).netloc
             if current_host == expected_host and "authentication" not in lower_url and "login" not in lower_url:
                 time.sleep(2)
                 return
             if "authentication" in lower_url or "login" in lower_url or "link-agent-seller" in lower_url:
-                try:
-                    ctx.page = ctx.helper._handle_click_for_platform(
-                        ctx.page,
+                handled_page = run_temu_page_operation(
+                    ctx,
+                    lambda page: ctx.helper._handle_click_for_platform(
+                        page,
                         "temu_business",
                         lower_url,
                         ctx.helper._log,
                         ctx.browser,
-                    )
-                except Exception:
-                    pass
+                    ),
+                    (expected_host,),
+                )
+                if handled_page is not None:
+                    ctx.page = handled_page
             time.sleep(2)
-        current_url = str(getattr(ctx.page, "url", "") or "")
-    raise RuntimeError(f"agentseller 授权跳转超时: target={target['name']} mallId={mall_id} url={getattr(ctx.page, 'url', '')}")
+        current_url = str(
+            run_temu_page_operation(
+                ctx,
+                lambda page: getattr(page, "url", ""),
+                (expected_host,),
+            )
+            or ""
+        )
+    raise RuntimeError(f"agentseller 授权跳转超时: target={target['name']} mallId={mall_id} url={current_url}")
 
 
 def download_seller_file(
-    page: Any,
+    page_or_ctx: Any,
     record: dict[str, Any],
     mall_id: int | str,
     output_path: Path,
@@ -754,7 +888,7 @@ def download_seller_file(
     download_payload = {"id": record.get("id"), "taskType": TASK_TYPE}
     download_data: dict[str, Any] = {}
     for attempt in range(1, max(1, attempts) + 1):
-        download_data = browser_post_json(page, DOWNLOAD_URL, download_payload, mall_id)
+        download_data = browser_post_json(page_or_ctx, DOWNLOAD_URL, download_payload, mall_id)
         if download_data.get("success") is True:
             break
         if str(download_data.get("errorCode")) != "2000000" or attempt >= max(1, attempts):
@@ -764,7 +898,7 @@ def download_seller_file(
     file_url = ((download_data.get("result") or {}).get("fileUrl") or "").strip()
     if not file_url:
         raise RuntimeError(f"下载接口未返回 fileUrl: {download_data}")
-    return browser_download_file(page, file_url, output_path), {
+    return browser_download_file(page_or_ctx, file_url, output_path), {
         "payload": download_payload,
         "download_attempts": attempt,
         "response": download_data,
@@ -786,14 +920,14 @@ def download_agent_file(
     base = str(target["base"])
     request_mall_id = agent_request_mall_id(str(target["key"]), agent_mall_id, mall_id)
     user_info_data = ensure_success(
-        browser_post_json(ctx.page, f"{base}/api/seller/auth/userInfo", {}, request_mall_id),
+        browser_post_json(ctx, f"{base}/api/seller/auth/userInfo", {}, request_mall_id),
         f"{base}/api/seller/auth/userInfo",
     )
     params = str(record.get("agentSellerExportParams") or "")
     sign = str(record.get("agentSellerExportSign") or "")
     export_payload = {"taskType": AGENT_TASK_TYPE, "params": params, "sign": sign}
     export_data = ensure_success(
-        browser_post_json(ctx.page, f"{base}/api/merchant/file/export", export_payload, request_mall_id),
+        browser_post_json(ctx, f"{base}/api/merchant/file/export", export_payload, request_mall_id),
         f"{base}/api/merchant/file/export",
     )
     file_id = export_data.get("result")
@@ -803,7 +937,7 @@ def download_agent_file(
     download_url = f"{base}/api/merchant/file/export/download"
     download_data: dict[str, Any] = {}
     for attempt in range(1, max(1, attempts) + 1):
-        download_data = browser_post_json(ctx.page, download_url, download_payload, request_mall_id)
+        download_data = browser_post_json(ctx, download_url, download_payload, request_mall_id)
         if download_data.get("success") is True:
             break
         if str(download_data.get("errorCode")) != "2000000" or attempt >= max(1, attempts):
@@ -813,7 +947,7 @@ def download_agent_file(
     file_url = ((download_data.get("result") or {}).get("fileUrl") or "").strip()
     if not file_url:
         raise RuntimeError(f"agentseller 下载接口未返回 fileUrl: {download_data}")
-    return browser_download_file(ctx.page, file_url, output_path), {
+    return browser_download_file(ctx, file_url, output_path), {
         "user_info_error_code": user_info_data.get("errorCode"),
         "export_payload": export_payload,
         "export_response": export_data,
@@ -863,7 +997,7 @@ def _export_temu_fund_details_unlocked(
     try:
         ctx = start_temu_browser(account_name, auth_path, login_timeout, auth_slot_held=True)
         debug["diagnostic_recorder_installed"] = install_browser_request_recorder(ctx.page)
-        user_info = browser_get_user_info(ctx.page)
+        user_info = browser_get_user_info(ctx)
         malls = malls_from_user_info(user_info)
         if not malls:
             raise RuntimeError("TEMU 未获取到店铺列表。")
@@ -900,7 +1034,7 @@ def _export_temu_fund_details_unlocked(
                 "pageSize": int(task.get("page_size") or 10),
                 "pageNum": 1,
             }
-            query_data = ensure_success(browser_post_json(ctx.page, PAGE_SEARCH_URL, query_payload, mall_id), PAGE_SEARCH_URL)
+            query_data = ensure_success(browser_post_json(ctx, PAGE_SEARCH_URL, query_payload, mall_id), PAGE_SEARCH_URL)
             total = int((query_data.get("result") or {}).get("total") or 0)
             export_payload = {
                 "fundDetailExport": True,
@@ -910,10 +1044,10 @@ def _export_temu_fund_details_unlocked(
             }
             previous_history_ids = {
                 row.get("id")
-                for row in history_records(ctx.page, mall_id)
+                for row in history_records(ctx, mall_id)
                 if row.get("id") not in (None, "")
             }
-            export_data = browser_post_json(ctx.page, EXPORT_URL, export_payload, mall_id)
+            export_data = browser_post_json(ctx, EXPORT_URL, export_payload, mall_id)
             if not (
                 export_data.get("success") is True
                 or str(export_data.get("errorCode")) == "2000000"
@@ -921,7 +1055,7 @@ def _export_temu_fund_details_unlocked(
                 ensure_success(export_data, EXPORT_URL)
 
             record = wait_history_record(
-                ctx.page,
+                ctx,
                 period,
                 mall_id,
                 attempts,
@@ -941,7 +1075,7 @@ def _export_temu_fund_details_unlocked(
                 elif target["key"] == "seller":
                     ensure_seller_page(ctx)
                     download_bytes, download_debug = download_seller_file(
-                        ctx.page,
+                        ctx,
                         record,
                         mall_id,
                         output_path,

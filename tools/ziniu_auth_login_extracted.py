@@ -726,16 +726,27 @@ class ZiniuAuthLogin:
             return False
 
         if not state.get("passwordVisible") and not state.get("switchedRecently"):
-            tab = page.ele("text=手机号登录", timeout=0.8) or page.ele("text=账号登录", timeout=0.8)
-            if tab:
-                try:
-                    tab.hover()
-                    time.sleep(0.2)
-                    tab.click()
-                    page.run_js("window.__financeCrawlerTemuPhoneSwitchedAt = Date.now(); return true;")
-                    time.sleep(2)
-                except Exception as exc:
-                    log_fn(f"[auth] TEMU native phone tab click failed, wait for manual/autofill: {exc}")
+            tab = (
+                page.ele("text=手机号登录", timeout=0.8)
+                or page.ele('xpath://div[normalize-space(.)="手机号登录"]', timeout=0.8)
+                or page.ele("text=账号登录", timeout=0.8)
+            )
+            if not tab:
+                log_fn("[auth] TEMU phone login tab not found; retry after page render")
+                return False
+            try:
+                tab.hover()
+                time.sleep(0.2)
+                tab.click()
+                time.sleep(2)
+                state = ZiniuAuthLogin._temu_login_form_state(page)
+                if not state.get("phoneVisible") or not state.get("passwordVisible"):
+                    log_fn(f"[auth] TEMU phone login tab switch did not expose form: {state}")
+                    return False
+                page.run_js("window.__financeCrawlerTemuPhoneSwitchedAt = Date.now(); return true;")
+            except Exception as exc:
+                log_fn(f"[auth] TEMU native phone tab click failed, wait for retry: {exc}")
+                return False
 
         for _ in range(8):
             state = ZiniuAuthLogin._temu_login_form_state(page)

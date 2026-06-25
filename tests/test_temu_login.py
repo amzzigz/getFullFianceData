@@ -161,6 +161,241 @@ def test_start_temu_browser_retries_initial_latest_tab_target_race(monkeypatch, 
     assert sleeps == [1, 3]
 
 
+def test_start_temu_browser_retries_chromium_attach_target_race(monkeypatch, tmp_path) -> None:
+    attach_calls = 0
+    sleeps: list[int] = []
+
+    class FakeOptions:
+        def set_local_port(self, port):
+            return self
+
+        def existing_only(self, on_off=True):
+            return self
+
+    page = SimpleNamespace(url=temu_fund_details.SELLER_BILL_URL)
+
+    class FakeBrowser:
+        latest_tab = page
+
+    def fake_chromium(options):
+        nonlocal attach_calls
+        attach_calls += 1
+        if attach_calls == 1:
+            raise RuntimeError("No such target id: initial")
+        return FakeBrowser()
+
+    helper = SimpleNamespace(
+        ensure_client_online=lambda: (True, ""),
+        build_start_browser_payload=lambda info: {"action": "startBrowser"},
+        send_http=lambda payload: {"statusCode": "0", "browserOauth": "oauth", "debuggingPort": 12345},
+        _handle_click_for_platform=lambda current_page, *args, **kwargs: current_page,
+        _log=lambda message: None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "DrissionPage",
+        SimpleNamespace(Chromium=fake_chromium, ChromiumOptions=FakeOptions),
+    )
+    monkeypatch.setattr(temu_fund_details, "load_ziniu_helper", lambda auth_path: helper)
+    monkeypatch.setattr(temu_fund_details, "resolve_temu_shop_info", lambda helper, account: ({"browserId": "1"}, ""))
+    monkeypatch.setattr(temu_fund_details, "temu_seller_session_ready", lambda current_page: current_page is page)
+    monkeypatch.setattr(temu_fund_details.time, "sleep", sleeps.append)
+    monkeypatch.setattr(temu_fund_details, "_TEMU_START_BLOCK_REASON", "")
+
+    ctx = temu_fund_details.start_temu_browser(
+        "B2",
+        tmp_path / "auth.py",
+        1,
+        auth_slot_held=True,
+    )
+
+    assert ctx.page is page
+    assert attach_calls == 2
+    assert sleeps == [1, 3]
+
+
+def test_browser_post_json_recovers_context_page_during_export() -> None:
+    class DisconnectedPage:
+        def run_js(self, script):
+            raise RuntimeError("与页面的连接已断开")
+
+        def reconnect(self, wait=0):
+            raise RuntimeError("No such target id: gone")
+
+    class ReplacementPage:
+        url = temu_fund_details.SELLER_BILL_URL
+
+        def run_js(self, script):
+            return {"ok": True, "status": 200, "data": {"success": True, "result": {"total": 1}}}
+
+    replacement = ReplacementPage()
+    browser = SimpleNamespace(
+        get_tabs=lambda url=None: [replacement] if url == "kuajingmaihuo.com" else [],
+        latest_tab=replacement,
+    )
+    ctx = temu_fund_details.TemuBrowserContext(
+        helper=SimpleNamespace(),
+        browser=browser,
+        page=DisconnectedPage(),
+        browser_oauth="oauth",
+        debug_port=12345,
+    )
+
+    data = temu_fund_details.browser_post_json(ctx, "https://example.test/api", {})
+
+    assert data["result"]["total"] == 1
+    assert ctx.page is replacement
+    assert ctx.reconnect_attempts == 1
+
+
+def test_page_operation_retries_when_first_recovery_also_hits_target_race() -> None:
+    class DisconnectedPage:
+        def reconnect(self, wait=0):
+            raise RuntimeError("No such target id: gone")
+
+    replacement = SimpleNamespace(url=temu_fund_details.SELLER_BILL_URL)
+    get_tabs_calls = 0
+
+    class FakeBrowser:
+        latest_tab = property(lambda self: (_ for _ in ()).throw(RuntimeError("No such target id: latest")))
+
+        def get_tabs(self, url=None):
+            nonlocal get_tabs_calls
+            get_tabs_calls += 1
+            if get_tabs_calls <= 3:
+                raise RuntimeError("Set changed size during iteration")
+            return [replacement]
+
+    ctx = temu_fund_details.TemuBrowserContext(
+        helper=SimpleNamespace(),
+        browser=FakeBrowser(),
+        page=DisconnectedPage(),
+        browser_oauth="oauth",
+        debug_port=12345,
+    )
+    operation_calls = 0
+
+    def operation(page):
+        nonlocal operation_calls
+        operation_calls += 1
+        if page is not replacement:
+            raise RuntimeError("与页面的连接已断开")
+        return "ok"
+
+    result = temu_fund_details.run_temu_page_operation(ctx, operation)
+
+    assert result == "ok"
+    assert ctx.page is replacement
+    assert ctx.reconnect_attempts == 2
+    assert operation_calls == 2
+
+
+def test_browser_download_file_recovers_context_page(tmp_path) -> None:
+    class DisconnectedPage:
+        def run_js(self, script):
+            raise RuntimeError("与页面的连接已断开")
+
+        def reconnect(self, wait=0):
+            raise RuntimeError("No such target id: gone")
+
+    class ReplacementPage:
+        url = temu_fund_details.SELLER_BILL_URL
+
+        def run_js(self, script):
+            return {
+                "ok": True,
+                "status": 200,
+                "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "length": 4,
+                "bodyBase64": "UEsDBA==",
+            }
+
+    replacement = ReplacementPage()
+    browser = SimpleNamespace(
+        get_tabs=lambda url=None: [replacement],
+        latest_tab=replacement,
+    )
+    ctx = temu_fund_details.TemuBrowserContext(
+        helper=SimpleNamespace(),
+        browser=browser,
+        page=DisconnectedPage(),
+        browser_oauth="oauth",
+        debug_port=12345,
+    )
+    output_path = tmp_path / "result.xlsx"
+
+    size = temu_fund_details.browser_download_file(
+        ctx,
+        "https://seller.kuajingmaihuo.com/file.xlsx",
+        output_path,
+    )
+
+    assert size == 4
+    assert output_path.read_bytes() == b"PK\x03\x04"
+    assert ctx.page is replacement
+
+
+def test_temu_seller_session_ready_propagates_disconnect(monkeypatch) -> None:
+    monkeypatch.setattr(
+        temu_fund_details,
+        "browser_post_json",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("与页面的连接已断开")),
+    )
+
+    with pytest.raises(RuntimeError, match="连接已断开"):
+        temu_fund_details.temu_seller_session_ready(object())
+
+
+def test_open_agent_target_recovers_navigation_disconnect(monkeypatch) -> None:
+    base = "https://agentseller-eu.temu.com"
+
+    class DisconnectedPage:
+        url = temu_fund_details.SELLER_BILL_URL
+
+        def run_js(self, script):
+            return "mallid=123"
+
+        def get(self, url):
+            raise RuntimeError("与页面的连接已断开")
+
+        def reconnect(self, wait=0):
+            raise RuntimeError("No such target id: gone")
+
+    class ReplacementPage:
+        url = base + "/labor/bill-download-with-detail"
+
+        def get(self, url):
+            self.url = base + "/labor/bill-download-with-detail"
+
+    replacement = ReplacementPage()
+    browser = SimpleNamespace(
+        get_tabs=lambda url=None: [replacement] if url == "temu.com" else [],
+        latest_tab=replacement,
+    )
+    helper = SimpleNamespace(
+        _handle_click_for_platform=lambda page, *args, **kwargs: page,
+        _log=lambda message: None,
+    )
+    ctx = temu_fund_details.TemuBrowserContext(
+        helper=helper,
+        browser=browser,
+        page=DisconnectedPage(),
+        browser_oauth="oauth",
+        debug_port=12345,
+    )
+    monkeypatch.setattr(temu_fund_details.time, "sleep", lambda seconds: None)
+
+    temu_fund_details.open_agent_target(
+        ctx,
+        {"name": "欧区", "region": 2, "base": base},
+        {"id": 1, "agentSellerExportParams": "params", "agentSellerExportSign": "sign"},
+        123,
+    )
+
+    assert ctx.page is replacement
+    assert ctx.reconnect_attempts == 1
+
+
 def test_start_temu_browser_reconnects_same_tab_after_initial_disconnect(monkeypatch, tmp_path) -> None:
     attach_count = 0
     reconnect_calls: list[int] = []
@@ -996,6 +1231,59 @@ def test_temu_phone_tab_never_falls_back_to_js_click(monkeypatch) -> None:
     auth_class._click_temu_login_form(FakePage(), lambda message: None)
 
     assert clicks == ["hover", "native"]
+
+
+def test_temu_login_form_uses_xpath_fallback_when_exact_text_locator_misses(monkeypatch) -> None:
+    auth_class = load_auth_module()
+    monkeypatch.setattr(temu_fund_details.time, "sleep", lambda seconds: None)
+    clicks: list[str] = []
+    switched = False
+
+    class FakeButton:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def hover(self) -> None:
+            clicks.append(f"hover:{self.name}")
+
+        def click(self, by_js: bool = False) -> None:
+            nonlocal switched
+            clicks.append(f"{'js' if by_js else 'native'}:{self.name}")
+            if self.name == "phone_tab":
+                switched = True
+
+    class FakePage:
+        def run_js(self, script: str):
+            if "__financeCrawlerTemuPhoneSwitchedAt = Date.now()" in script:
+                return True
+            if "__financeCrawlerTemuLoginSubmittedAt = Date.now()" in script:
+                return True
+            return {
+                "phoneVisible": switched,
+                "phoneValue": "demo-phone" if switched else "",
+                "phoneAutofilled": switched,
+                "passwordVisible": switched,
+                "passwordValue": "saved-password" if switched else "",
+                "passwordAutofilled": switched,
+                "agreementPresent": False,
+                "agreementChecked": False,
+                "submitDisabled": False,
+                "switchedRecently": False,
+                "submittedRecently": False,
+            }
+
+        def eles(self, selector: str):
+            return []
+
+        def ele(self, selector: str, timeout: float = 0):
+            if selector == 'xpath://div[normalize-space(.)="手机号登录"]':
+                return FakeButton("phone_tab")
+            if selector.startswith("xpath://button") and "登录" in selector:
+                return FakeButton("login")
+            return None
+
+    assert auth_class._click_temu_login_form(FakePage(), lambda message: None) is True
+    assert clicks == ["hover:phone_tab", "native:phone_tab", "native:login"]
 
 
 def test_temu_login_form_accepts_protected_browser_autofill(monkeypatch) -> None:

@@ -1,5 +1,9 @@
 # 当前任务
 
+## 2026-06-26
+
+- [x] 修复 TEMU 登录页未切换“手机号登录”却误等保存密码：增加真实 DOM XPath 兜底，点击后以手机号/密码控件出现作为切换成功标准。
+
 ## 2026-06-25
 
 - [x] 修复 review 红灯：SHEIN 识别 `Set changed size during iteration` / `No such target id`，普通共享登录与申合首次读取 `latest_tab` 最多重试 3 次；未扩展为跨平台框架。
@@ -13,6 +17,7 @@
 - [x] 分析 `run_20260625_005750.log`：纯串行下第一个账号仍可在首次控制绑定阶段断联；TEMU 改为复用 `latest_tab`，断联时同端口重绑而不是立即重启浏览器。
 - [x] 按 DrissionPage 4.1.1.4 官方语义修正断联恢复：`existing_only()` 接管浏览器，Tab 仍存在时调用 `reconnect(wait=1)`，target 被替换时重新选择 TEMU Tab。
 - [x] 补齐 TEMU 首次标签接管竞态：首次 `latest_tab` 获取失败时有限重试，并识别 `Set changed size during iteration` / `No such target id`。
+- [x] 修复审查发现的 TEMU 恢复范围缺口：浏览器 attach、业务 fetch、文件下载、卖家中心导航和区域授权均接入可更新 `ctx.page` 的会话级恢复；登录会话探测不再吞断联。
 
 ## 2026-06-24
 

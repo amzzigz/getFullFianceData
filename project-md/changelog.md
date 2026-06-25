@@ -1,5 +1,9 @@
 # 变更记录
 
+## 2026-06-26
+
+- 修复 TEMU 卖家中心默认扫码登录页识别：`text=手机号登录` 未命中时使用标准化文本 XPath 兜底；点击后必须确认手机号和密码框出现，否则记录 Tab 切换失败并重试，不再误报“等待保存密码”。
+
 ## 2026-06-25
 
 - 修复 SHEIN 首次标签页接管红灯：把 `Set changed size during iteration` / `No such target id` 纳入连接竞态，普通 SHEIN 和申合首次 `latest_tab` 读取失败时等待 1 秒并最多重试 3 次。
@@ -19,6 +23,7 @@
 - 复核 DrissionPage 4.1.1.4 官方文档和源码后，删除“重新构造同端口 Chromium”的伪重连；改用 `tab.reconnect(wait=1)`，原 target 消失时重新枚举 TEMU Tab，并启用 `existing_only()` 防止接管失败时启动普通 Chrome。
 - 官方重连修复验证：TEMU 与主调度定向测试 `64 passed`，完整测试 `159 passed`。
 - 补齐 TEMU 初始 target 竞态：首次 `latest_tab` 获取支持有限重试，新增识别 `Set changed size during iteration` / `No such target id`；TEMU 与主调度定向测试 `67 passed`，完整测试 `166 passed`。
+- 修复 TEMU 全流程断联恢复：`Chromium(existing_only)` attach 支持 target 竞态重试；接口 fetch、文件下载、店铺导航和区域授权恢复后更新 `ctx.page`；首次恢复再次撞 target 切换时继续使用剩余恢复预算。TEMU 与主调度定向测试 `73 passed`，完整测试 `174 passed`。
 
 ## 2026-06-24
 
