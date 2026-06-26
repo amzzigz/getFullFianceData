@@ -186,6 +186,25 @@ def test_panel_runner_bat_supports_dp0_project_root_and_pause(tmp_path):
     assert str(tmp_path) in runner.read_log(run.id)
 
 
+def test_panel_runner_bat_supports_one_level_dp0_project_root(tmp_path):
+    runner = PanelRunner(project_root=tmp_path)
+    bat_path = save_bat_file(
+        tmp_path,
+        "temu_monthly.bat",
+        '@echo off\r\ncd /d "%~dp0.."\r\necho cwd=%cd%\r\n',
+    )
+
+    run = runner.start_run({"mode": "bat", "bat_path": str(bat_path)})
+    deadline = datetime.now().timestamp() + 5
+    while runner.get_run(run.id).status == "running" and datetime.now().timestamp() < deadline:
+        time.sleep(0.05)
+
+    done = runner.get_run(run.id)
+    assert done.status == "success"
+    assert done.summary["success_count"] == 1
+    assert f"cwd={tmp_path}" in runner.read_log(run.id)
+
+
 def test_prepare_bat_for_run_relocates_legacy_bat_jobs_copy(tmp_path):
     legacy_root = tmp_path / "output" / "panel" / "bat_jobs"
     legacy_root.mkdir(parents=True)

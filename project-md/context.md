@@ -53,7 +53,9 @@
 - 定时执行首版支持每日、每周、每月，计划保存到 `output/panel/schedules.json`。它不从左侧模块/账号筛选生成任务，而是在右侧定时页拖入 bat/cmd，面板保存副本到 `output/panel` 后定时执行。
 - bat/cmd 上传按二进制原样保存，避免中文路径或非 UTF-8 编码被转码破坏。浏览器不能读取本地文件真实完整路径，所以计划执行的是保存到面板目录的副本。
 - bat 副本位于 `output/panel`，用于兼容现有 bat 的 `cd /d "%~dp0..\.."`；执行时给子进程空 stdin，避免 `pause` 在后台卡住。
+- bat 副本保存位置按内容里的 `%~dp0` 回退层级决定：`cd /d "%~dp0.."` 保存到 `output`，`cd /d "%~dp0..\.."` 保存到 `output/panel`，避免 TEMU/TK/SHEIN 普通 bat 在面板复制后把项目根误算成 `output`。
 - 旧版已保存到 `output/panel/bat_jobs` 的计划会在执行前自动迁移到 `output/panel`，无需手工重建。
+- 旧版已保存到错误层级的 bat 计划会在执行前按同一规则自动迁移；部署机出现 `can't open file E:\自动化\财务\output\main.py` 即为一层 `%~dp0..` bat 被放到 `output/panel` 的典型症状。
 - bat/cmd 输出不走财务总调日志过滤；如果日志没有 `采集结束` 汇总行，面板按进程退出码显示成功或失败，并在业务日志中展示普通 bat 输出。
 - 定时依赖面板进程常驻；如需服务化、错过补跑和更完整历史，再迁移 TaskLauncher 的 APScheduler/SQLite 思路。
 

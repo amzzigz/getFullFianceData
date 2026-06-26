@@ -2,6 +2,7 @@
 
 ## 2026-06-26
 
+- 面板执行用户拖入的 bat 时不改写 bat 内容；改为按 bat 内 `cd /d "%~dp0..."` 的回退层级保存副本，使 bat 自己计算出的项目根保持正确。普通 TEMU/TK/SHEIN bat 的 `%~dp0..` 保存到 `output`，E1E2/POP 这类 `%~dp0..\..` 保存到 `output/panel`。
 - 财务控制面板首版不重写爬虫调度和平台导出逻辑，只作为本地网页壳调用现有 `main.py` 参数入口；这样账号、模块、周期、诊断模式均沿用已验证路径。
 - 控制面板首版使用 Python 标准库 HTTP 服务和原生 HTML/JS，不引入 FastAPI、前端构建或数据库依赖；运行记录先保存到 `output/panel/runs`，后续确认需求后再迁移 TaskLauncher 的 APScheduler/SQLite 计划执行层。
 - 面板业务日志不直接暴露 DrissionPage、webdriver 等专业细节；常见技术错误转换为“浏览器连接中断”“账号登录未完成”“平台仍在生成文件”等业务人员可理解文本。

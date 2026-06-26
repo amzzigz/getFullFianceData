@@ -58,8 +58,29 @@ def save_bat_file(project_root: Path, filename: str, content: str) -> Path:
     return save_bat_file_bytes(project_root, filename, content.encode("utf-8"))
 
 
+def _dp0_parent_depth(content: bytes) -> int | None:
+    text = content.decode("latin-1", errors="ignore").lower()
+    match = re.search(r'cd\s+/d\s+["\']?%~dp0(?P<suffix>(?:[\\/]*\.\.)*)', text)
+    if not match:
+        return None
+    return len(re.findall(r"\.\.", match.group("suffix") or ""))
+
+
+def _bat_storage_root(project_root: Path, content: bytes) -> Path:
+    depth = _dp0_parent_depth(content)
+    if depth is None:
+        return project_root / "output" / "panel"
+    if depth <= 0:
+        return project_root
+    parts = ["output", "panel", "bat_jobs"]
+    root = project_root
+    for index in range(depth):
+        root /= parts[index] if index < len(parts) else f"bat_jobs_{index + 1}"
+    return root
+
+
 def save_bat_file_bytes(project_root: Path, filename: str, content: bytes) -> Path:
-    bat_root = project_root / "output" / "panel"
+    bat_root = _bat_storage_root(project_root, content)
     bat_root.mkdir(parents=True, exist_ok=True)
     stem = Path(filename).stem or "finance_job"
     safe_stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", stem).strip("._") or "finance_job"
@@ -69,16 +90,17 @@ def save_bat_file_bytes(project_root: Path, filename: str, content: bytes) -> Pa
 
 
 def prepare_bat_for_run(project_root: Path, bat_path: Path) -> Path:
-    panel_root = project_root / "output" / "panel"
+    content = bat_path.read_bytes()
+    target_root = _bat_storage_root(project_root, content)
+    target_root.mkdir(parents=True, exist_ok=True)
     try:
-        is_legacy = bat_path.parent.name == "bat_jobs" and bat_path.parent.parent.resolve() == panel_root.resolve()
+        if bat_path.parent.resolve() == target_root.resolve():
+            return bat_path
     except OSError:
-        is_legacy = False
-    if not is_legacy:
         return bat_path
-    target = panel_root / bat_path.name
-    if not target.exists() or target.read_bytes() != bat_path.read_bytes():
-        target.write_bytes(bat_path.read_bytes())
+    target = target_root / bat_path.name
+    if not target.exists() or target.read_bytes() != content:
+        target.write_bytes(content)
     return target
 
 
