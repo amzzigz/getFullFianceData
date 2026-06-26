@@ -2,6 +2,17 @@
 
 ## 2026-06-26
 
+- 新增本地网页控制面板首版：`scripts/run_control_panel.py` 启动，浏览器访问 `http://127.0.0.1:8765`；支持按环境、平台、模块、账号、店铺筛选、周期和诊断模式启动财务采集。
+- 新增 `finance_crawler.control_panel`：生成 `main.py` 命令、启动采集子进程、保存面板日志、解析终端汇总，并将常见技术错误转换为业务可读日志。
+- 新增控制面板回归测试，覆盖命令生成、业务日志转换和运行摘要解析；面板实际启动 smoke 验证通过。
+- 控制面板补齐第一轮反馈：模块和账号支持全选/取消全选；展示账号池名称与账号数量；新增每日、每周、每月定时计划，计划保存到 `output/panel/schedules.json`。
+- 调整控制面板布局：移除左侧定时表单，右侧主区域新增 `运行日志` / `定时计划` Tab；新增结构回归测试防止定时功能再次回到侧栏。
+- 定时计划改为 bat/cmd 拖拽上传：新增 `/api/bat-files`，上传文件按原始字节保存到 `output/panel`，计划触发时通过 `cmd.exe /d /c` 执行该副本；定时计划不再读取左侧模块/账号筛选。
+- 控制面板账号列表改为按账号名称去重展示；SHEIN 当前 5 个账号源原始 34 条账号合并后显示 22 个唯一账号。
+- 修复 bat 定时运行后面板日志空白：当日志没有财务总调关键行时，业务日志显示普通 bat 输出；没有 `采集结束` 汇总时按退出码把 bat 成功显示为 `成功=1`。
+- 修复 bat 定时路径和卡住问题：副本改存 `output/panel`，兼容 bat 内 `cd /d "%~dp0..\.."` 回到项目根；旧 `output/panel/bat_jobs` 计划执行前自动迁移；子进程使用 `stdin=DEVNULL`，避免末尾 `pause` 让计划永久 running。
+- 修复面板操作无响应：`开始运行`、保存计划和上传 bat 捕获接口错误并弹出提示，例如已有任务正在运行时直接提示用户等待。
+- `scripts/run_control_panel.py` 新增 `--project-root`，可从隔离 worktree 启动但读取并运行真实 `E:\自动化\财务`；smoke 验证真实项目下 prod 读取到 22 个任务、11 个账号池、58 个账号。
 - 修复 TEMU 卖家中心默认扫码登录页识别：`text=手机号登录` 未命中时使用标准化文本 XPath 兜底；点击后必须确认手机号和密码框出现，否则记录 Tab 切换失败并重试，不再误报“等待保存密码”。
 - 修复 B27/B28/B29 主账号启动后停在 `agentseller.temu.com/` 的登录超时：启动状态机将普通 agentseller 页面导航回卖家中心资金明细入口；新增账号特有默认落地页回归测试。
 
@@ -10,7 +21,7 @@
 - 修复 SHEIN 首次标签页接管红灯：把 `Set changed size during iteration` / `No such target id` 纳入连接竞态，普通 SHEIN 和申合首次 `latest_tab` 读取失败时等待 1 秒并最多重试 3 次。
 - 增加 SHEIN 原生标签页恢复试验版：普通 SHEIN/POP/A1B 共享登录和 A1Y-A4Y 申合均以 `existing_only()` 接管紫鸟浏览器，断联时优先 `tab.reconnect(wait=1)`，target 丢失时按业务域名选择替代标签页。
 - 申合浏览器请求增加可更新页面引用，列表和报账单导出在替换 tab 后继续复用新页面；单浏览器恢复上限为 3 次，耗尽后仍走原清理和重试。
-- 新增普通 SHEIN attach/reconnect/替代 tab、申合 attach/reconnect/浏览器请求替代 tab 回归测试；SHEIN 定向测试 40 项通过。
+- 新增普通 SHEIN attach/reconnect/替代 tab、申合 attach/reconnect/浏览器请求替代 tab 回归测试；隔离工作树全量测试 153 项通过。
 - 修复部署机 `Set changed size during iteration` / `No such target id`：首版在 `existing_only()` 后仍调用 `new_tab()`，与紫鸟 target 销毁事件竞态；现改为普通 SHEIN 和申合均复用 `latest_tab`，导航失败进入原生重连循环。
 - 新增两项“不得创建新 target”回归测试；任务配置校验通过，完整测试 165 项通过。
 - 根据全量日志 `run_20260625_002325.log` 修复 TEMU 长批次仍断联：调度层将 `temu_fund_details` 有效 worker 固定为 1，运行计划会显示 `并发=1`。

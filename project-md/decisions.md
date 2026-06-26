@@ -2,6 +2,16 @@
 
 ## 2026-06-26
 
+- 财务控制面板首版不重写爬虫调度和平台导出逻辑，只作为本地网页壳调用现有 `main.py` 参数入口；这样账号、模块、周期、诊断模式均沿用已验证路径。
+- 控制面板首版使用 Python 标准库 HTTP 服务和原生 HTML/JS，不引入 FastAPI、前端构建或数据库依赖；运行记录先保存到 `output/panel/runs`，后续确认需求后再迁移 TaskLauncher 的 APScheduler/SQLite 计划执行层。
+- 面板业务日志不直接暴露 DrissionPage、webdriver 等专业细节；常见技术错误转换为“浏览器连接中断”“账号登录未完成”“平台仍在生成文件”等业务人员可理解文本。
+- 控制面板不再把定时功能塞进左侧筛选栏；左侧只承担“本次运行范围”，右侧主区域用 Tab 切换 `运行日志` 和 `定时计划`，避免账号/模块列表较长时侧栏不可用。
+- 控制面板定时执行不复用左侧筛选状态。业务人员在定时页拖入本地 bat/cmd，面板保存一份副本到 `output/panel`，计划触发时执行该副本，避免为了总调 bat 继续扩张左侧栏。
+- bat 上传按原始二进制保存，不用文本解码，避免中文路径或非 UTF-8 编码 bat 被浏览器转码破坏。
+- bat 副本必须放在 `output/panel` 而不是更深目录，以兼容现有 bat 中常见的 `cd /d "%~dp0..\.."` 项目根定位写法；执行时使用 `stdin=DEVNULL` 防止 `pause` 卡住后台任务。
+- 已保存到旧 `output/panel/bat_jobs` 的计划保留兼容：执行前自动复制到 `output/panel` 后再运行，避免用户需要逐个删除重建计划。
+- 控制面板定时执行首版继续保持轻量：计划存到 `output/panel/schedules.json`，由面板进程每 20 秒检查每日/每周/每月触发点；同一时间已有任务运行时不再并发启动新任务。
+- 从隔离 worktree 启动控制面板时必须传 `--project-root E:\自动化\财务`，否则只能读取 worktree 内的公开/空配置，账号池会显示为空或不完整。
 - TEMU 登录修复遵循最小改动：不引入通用页面发现框架，只补充“手机号登录”定位兜底和切换结果验证；找不到或未切换成功时立即返回外层重试。
 - TEMU 资金明细启动成功标准只认卖家中心 `userInfo`，不把普通 `agentseller.temu.com` 首页视为成功；普通 agentseller 落地页直接返回资金明细入口，authentication/login 页面继续沿用现有登录处理。
 
@@ -9,6 +19,9 @@
 
 - 浏览器稳定性修复遵循最小化原则：仅把跨 SHEIN 链路完全相同的“首次 `latest_tab` 有限重试”放入 `auth.py` 小助手，不抽象整套跨平台浏览器管理框架；TEMU 保留其平台专用恢复和清理语义。
 - `existing_only()` 模式下禁止 SHEIN 再调用 `browser.new_tab()`。紫鸟启动时已提供现有 target，额外创建 tab 会与 target 销毁事件竞争；普通 SHEIN 和申合均复用 `latest_tab`，并在同一 tab 上导航。
+- SHEIN 断联恢复沿用 TEMU 已核对的 DrissionPage 4.1.1.4 官方语义，但保持平台隔离：普通 SHEIN/POP/A1B 在 `auth.py` 恢复 `geiwohuo.com` 标签页，A1Y-A4Y 申合在自身模块恢复 `shenhe888.com` 标签页。
+- 恢复顺序固定为当前 tab `reconnect(wait=1)`、按目标域名枚举现有 tab、符合目标域名或空白页的 `latest_tab`；最多 3 次，禁止通过重新构造普通 Chrome 掩盖紫鸟会话失效。
+- 原有 SHEIN 账号批处理、账号级 cookie 复用、`ziniu_auth_slot()` 锁范围、stopBrowser 清理和最终失败补跑保持不变。
 - TEMU 稳定性不能只依赖函数内部的 `ziniu_auth_slot`；该锁保护单次尝试，失败返回后线程池可让其他账号插入，再回到原账号重试。`temu_fund_details` 必须在调度层固定单 worker，使账号及其重试成为连续执行单元。
 - 紫鸟 `stopBrowser statusCode=0` 只代表停止请求被接受，不代表浏览器环境已完全退出；固定 3 秒冷却改为轮询本次 `debuggingPort` 关闭，最长 10 秒。
 - `getBrowserList` 返回环境池而非运行会话，不用于判断关闭完成。调试端口超时未关闭时设置进程级启动阻断，宁可停止后续 TEMU 账号，也不能在残留浏览器上继续启动。
@@ -43,12 +56,6 @@
 - TikTok `start_tiktok_browser()` 与 SHEIN 共享登录一样会触发紫鸟本地 `startBrowser`，必须受 `runtime.ziniu_auth_concurrency` 约束；任务层可以并发排队，但浏览器启动/登录段默认串行。
 - E1E2 `code=22008000` / `暂无数据可导出` 是业务无数据，不是技术失败；应计入 `no_data`，并跳过最终失败补跑。
 - 因失败日志来自低配环境，E1E2 不能依赖高配本机实跑结论；该任务默认端到端串行，优先稳定和可解释日志，不追求两个账号并发。
-
-## 2026-06-25
-
-- SHEIN 断联恢复沿用 TEMU 已核对的 DrissionPage 4.1.1.4 官方语义，但保持平台隔离：普通 SHEIN/POP/A1B 在 `auth.py` 恢复 `geiwohuo.com` 标签页，A1Y-A4Y 申合在自身模块恢复 `shenhe888.com` 标签页。
-- 恢复顺序固定为当前 tab `reconnect(wait=1)`、按目标域名枚举现有 tab、符合目标域名或空白页的 `latest_tab`；最多 3 次，禁止通过重新构造普通 Chrome 掩盖紫鸟会话失效。
-- 原有 SHEIN 账号批处理、账号级 cookie 复用、`ziniu_auth_slot()` 锁范围、stopBrowser 清理和最终失败补跑保持不变。
 
 ## 2026-06-16
 
