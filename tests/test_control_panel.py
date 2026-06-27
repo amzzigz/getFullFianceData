@@ -10,6 +10,7 @@ from finance_crawler.control_panel import (
     INDEX_HTML,
     PanelRunner,
     PanelSchedule,
+    build_schedule_run_name,
     build_bat_command,
     build_finance_command,
     business_log_line,
@@ -303,3 +304,56 @@ def test_schedule_due_key_ignores_wrong_day_or_disabled():
 
     assert schedule_due_key(disabled, now) == ""
     assert schedule_due_key(weekly, now) == ""
+
+
+def test_schedule_run_name_uses_plan_name_and_trigger_time():
+    schedule = PanelSchedule(
+        id="m1",
+        name="temu月度财务",
+        enabled=True,
+        schedule_type="monthly",
+        hour=23,
+        minute=0,
+        month_day=2,
+        payload={"mode": "bat", "bat_path": "nightly.bat"},
+    )
+
+    assert build_schedule_run_name(schedule, datetime(2026, 6, 2, 23, 0)) == "temu月度财务 - 2026-06-02 23:00"
+
+
+def test_due_schedule_run_record_uses_schedule_name_and_trigger_time(tmp_path):
+    runner = PanelRunner(project_root=tmp_path)
+    bat_path = save_bat_file(tmp_path, "ok.bat", "@echo off\r\necho ok\r\n")
+    runner.schedule_store.add(
+        {
+            "name": "temu月度财务",
+            "enabled": True,
+            "schedule_type": "monthly",
+            "hour": 23,
+            "minute": 0,
+            "month_day": 2,
+            "payload": {"mode": "bat", "bat_path": str(bat_path), "bat_name": bat_path.name},
+        }
+    )
+
+    runs = runner.run_due_schedules(datetime(2026, 6, 2, 23, 0))
+
+    assert len(runs) == 1
+    assert runs[0].display_name == "temu月度财务 - 2026-06-02 23:00"
+
+
+def test_panel_can_stop_current_run(tmp_path):
+    runner = PanelRunner(project_root=tmp_path)
+    bat_path = save_bat_file(tmp_path, "slow.bat", "@echo off\r\nping 127.0.0.1 -n 6 >nul\r\n")
+
+    run = runner.start_run({"mode": "bat", "bat_path": str(bat_path), "run_name": "慢任务"})
+    deadline = datetime.now().timestamp() + 3
+    while not runner.stop_active_run() and datetime.now().timestamp() < deadline:
+        time.sleep(0.05)
+    deadline = datetime.now().timestamp() + 5
+    while runner.get_run(run.id).status == "running" and datetime.now().timestamp() < deadline:
+        time.sleep(0.05)
+
+    stopped = runner.get_run(run.id)
+    assert stopped.status == "stopped"
+    assert "用户已中止当前任务" in runner.read_log(run.id)

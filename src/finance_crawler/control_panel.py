@@ -267,6 +267,7 @@ def panel_options(env: str = "prod", project_root: Path = PROJECT_ROOT) -> dict[
 @dataclass
 class PanelRun:
     id: str
+    display_name: str
     env: str
     command: list[str]
     log_path: str
@@ -309,6 +310,11 @@ def schedule_due_key(schedule: PanelSchedule, now: datetime | None = None) -> st
             return ""
         return current.strftime("%Y-%m-%dT%H:%M")
     return ""
+
+
+def build_schedule_run_name(schedule: PanelSchedule, now: datetime | None = None) -> str:
+    current = now or datetime.now()
+    return f"{schedule.name} - {current:%Y-%m-%d %H:%M}"
 
 
 class ScheduleStore:
@@ -381,6 +387,8 @@ class PanelRunner:
         self.run_root.mkdir(parents=True, exist_ok=True)
         self.schedule_store = ScheduleStore(project_root / "output" / "panel" / "schedules.json")
         self.runs: dict[str, PanelRun] = {}
+        self.processes: dict[str, subprocess.Popen[str]] = {}
+        self.stopped_run_ids: set[str] = set()
         self.lock = threading.Lock()
         self.scheduler_started = False
 
@@ -411,6 +419,7 @@ class PanelRunner:
             )
         run = PanelRun(
             id=run_id,
+            display_name=str(payload.get("run_name") or run_id),
             env=str(payload.get("env") or "prod"),
             command=command,
             log_path=str(log_path),
@@ -440,6 +449,10 @@ class PanelRunner:
                     errors="replace",
                     env=env,
                 )
+                with self.lock:
+                    self.processes[run.id] = process
+                if run.id in self.stopped_run_ids:
+                    self._terminate_process(process)
                 assert process.stdout is not None
                 for line in process.stdout:
                     log.write(line)
@@ -450,10 +463,47 @@ class PanelRunner:
                 log.write(f"面板运行失败: {exc}\n")
             run.return_code = -1
         finally:
+            with self.lock:
+                self.processes.pop(run.id, None)
             text = self.read_log(run.id)
-            run.summary = finalize_run_summary(summarize_run_log(text), run.return_code)
-            run.status = str(run.summary.get("status") or "failed")
+            if run.id in self.stopped_run_ids:
+                if "用户已中止当前任务" not in text:
+                    with Path(run.log_path).open("a", encoding="utf-8", errors="replace") as log:
+                        log.write("用户已中止当前任务。\n")
+                    text = self.read_log(run.id)
+                run.summary = summarize_run_log(text)
+                run.status = "stopped"
+            else:
+                run.summary = finalize_run_summary(summarize_run_log(text), run.return_code)
+                run.status = str(run.summary.get("status") or "failed")
             run.ended_at = time.time()
+
+    def _terminate_process(self, process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            process.terminate()
+
+    def stop_active_run(self) -> bool:
+        with self.lock:
+            run = next((item for item in self.runs.values() if item.status == "running"), None)
+            if not run:
+                return False
+            self.stopped_run_ids.add(run.id)
+            process = self.processes.get(run.id)
+        with Path(run.log_path).open("a", encoding="utf-8", errors="replace") as log:
+            log.write("用户已中止当前任务。\n")
+        if process:
+            self._terminate_process(process)
+        return True
 
     def get_run(self, run_id: str) -> PanelRun | None:
         with self.lock:
@@ -491,12 +541,15 @@ class PanelRunner:
         started: list[PanelRun] = []
         if self.active_run():
             return started
+        current = now or datetime.now()
         for schedule in self.schedule_store.list():
-            run_key = schedule_due_key(schedule, now)
+            run_key = schedule_due_key(schedule, current)
             if not run_key or run_key == schedule.last_run_key:
                 continue
             self.schedule_store.mark_ran(schedule.id, run_key)
-            started.append(self.start_run(schedule.payload))
+            payload = dict(schedule.payload)
+            payload["run_name"] = build_schedule_run_name(schedule, current)
+            started.append(self.start_run(payload))
             break
         return started
 
@@ -522,6 +575,7 @@ INDEX_HTML = r"""<!doctype html>
     .row > * { flex:1; }
     button { height:36px; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:6px; padding:0 14px; cursor:pointer; font-weight:600; }
     button.secondary { color:var(--accent); background:#fff; }
+    button.danger { border-color:var(--bad); background:var(--bad); color:#fff; }
     button:disabled { opacity:.55; cursor:not-allowed; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
     .panel h2 { font-size:15px; margin:0 0 10px; }
@@ -595,6 +649,7 @@ INDEX_HTML = r"""<!doctype html>
         <button id="runBtn">开始运行</button>
         <button class="secondary" id="refreshBtn">刷新</button>
       </div>
+      <button class="danger" id="stopRunBtn" style="margin-top:8px;width:100%" disabled>中止目前任务</button>
     </div>
   </aside>
   <section>
@@ -837,10 +892,20 @@ async function uploadBatFile(file) {
 async function refreshRuns() {
   const runs = await api('/api/runs');
   document.getElementById('runs').innerHTML = runs.map(r =>
-    `<div>${r.id} - <b class="${r.status === 'failed' ? 'status-bad' : 'status-ok'}">${r.status}</b><button class="secondary" onclick="selectRun('${r.id}')">查看</button></div>`
+    `<div>${r.display_name || r.id} - <b class="${r.status === 'failed' ? 'status-bad' : 'status-ok'}">${r.status}</b><button class="secondary" onclick="selectRun('${r.id}')">查看</button></div>`
   ).join('') || '<span class="muted">暂无记录</span>';
+  document.getElementById('stopRunBtn').disabled = !runs.some(r => r.status === 'running');
   if (!currentRunId && runs.length) currentRunId = runs[0].id;
   if (currentRunId) await selectRun(currentRunId);
+}
+
+async function stopCurrentRun() {
+  try {
+    await api('/api/runs/active/stop', {method:'POST'});
+    await refreshRuns();
+  } catch (error) {
+    showError(error);
+  }
 }
 
 async function refreshSchedules() {
@@ -879,6 +944,7 @@ document.getElementById('platform').addEventListener('change', renderFiltered);
 document.getElementById('tasks').addEventListener('change', renderAccounts);
 document.getElementById('refreshBtn').addEventListener('click', refreshRuns);
 document.getElementById('runBtn').addEventListener('click', startRun);
+document.getElementById('stopRunBtn').addEventListener('click', stopCurrentRun);
 document.getElementById('selectAllTasks').addEventListener('click', () => setChecks('tasks', true));
 document.getElementById('clearAllTasks').addEventListener('click', () => setChecks('tasks', false));
 document.getElementById('selectAllAccounts').addEventListener('click', () => setChecks('accounts', true));
@@ -945,6 +1011,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        if self.path == "/api/runs/active/stop":
+            stopped = self.runner.stop_active_run()
+            self._send_json({"stopped": stopped})
+            return
         if self.path == "/api/bat-files":
             try:
                 length = int(self.headers.get("Content-Length") or "0")
