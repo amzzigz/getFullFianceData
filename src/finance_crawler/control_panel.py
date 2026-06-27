@@ -118,7 +118,11 @@ def _clean_message(text: str) -> str:
     return text.strip()
 
 
-def business_log_line(raw_line: str) -> str | None:
+def _task_display_name(task_id: str, task_names: dict[str, str] | None = None) -> str:
+    return (task_names or {}).get(task_id, task_id)
+
+
+def business_log_line(raw_line: str, task_names: dict[str, str] | None = None) -> str | None:
     line = raw_line.strip()
     if not line:
         return None
@@ -140,24 +144,35 @@ def business_log_line(raw_line: str) -> str | None:
         return line
     if line.startswith("账号:") or line.startswith("采集结束") or line.startswith("失败明细") or line.startswith("无数据明细"):
         return line
-    if line.startswith("文件数:") or line.startswith("文件:") or line.startswith("- "):
+    if line.startswith("- "):
+        item = _parse_detail_line(line, task_names)
+        if item:
+            return f"- {item['account']} | {item['task']} | {item['message']}"
+        return line
+    if line.startswith("文件数:") or line.startswith("文件:"):
         return line
     cleaned = _clean_message(line)
     return cleaned if cleaned != line and cleaned else None
 
 
-def _parse_detail_line(line: str) -> dict[str, str] | None:
+def _parse_detail_line(
+    line: str,
+    task_names: dict[str, str] | None = None,
+) -> dict[str, str] | None:
     match = re.match(r"\s*-\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*)\s*$", line)
     if not match:
         return None
     return {
         "account": match.group(1).strip(),
-        "task": match.group(2).strip(),
+        "task": _task_display_name(match.group(2).strip(), task_names),
         "message": _clean_message(match.group(3).strip()),
     }
 
 
-def summarize_run_log(log_text: str) -> dict[str, Any]:
+def summarize_run_log(
+    log_text: str,
+    task_names: dict[str, str] | None = None,
+) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "status": "running",
         "success_count": 0,
@@ -186,7 +201,7 @@ def summarize_run_log(log_text: str) -> dict[str, Any]:
         if line.startswith("无数据明细"):
             detail_mode = "no_data"
             continue
-        item = _parse_detail_line(line)
+        item = _parse_detail_line(line, task_names)
         if item and detail_mode == "failed":
             summary["failed_items"].append(item)
         elif item and detail_mode == "no_data":
@@ -194,8 +209,15 @@ def summarize_run_log(log_text: str) -> dict[str, Any]:
     return summary
 
 
-def business_log_lines(log_text: str) -> list[str]:
-    lines = [line for line in (business_log_line(item) for item in log_text.splitlines()) if line]
+def business_log_lines(
+    log_text: str,
+    task_names: dict[str, str] | None = None,
+) -> list[str]:
+    lines = [
+        line
+        for line in (business_log_line(item, task_names) for item in log_text.splitlines())
+        if line
+    ]
     if lines:
         return lines
     return [line.strip() for line in log_text.splitlines() if line.strip()]
@@ -264,6 +286,50 @@ def panel_options(env: str = "prod", project_root: Path = PROJECT_ROOT) -> dict[
     return {"env": env, "tasks": tasks, "accounts": accounts, "account_pools": account_pools}
 
 
+def task_name_map(options: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(task.get("id")): str(task.get("name") or task.get("id"))
+        for task in options.get("tasks") or []
+        if task.get("id")
+    }
+
+
+PERIOD_NAMES = {"daily": "日度", "weekly": "周度", "monthly": "月度"}
+
+
+def validate_run_selection(
+    task_ids: list[str],
+    selected_accounts: list[str],
+    period: str,
+    options: dict[str, Any],
+) -> None:
+    if not task_ids:
+        raise RuntimeError("请至少选择一个模块。")
+    if not selected_accounts:
+        raise RuntimeError("请至少选择一个账号。")
+
+    tasks = {str(task.get("id")): task for task in options.get("tasks") or []}
+    memberships = {
+        account: {
+            source
+            for source, names in (options.get("accounts") or {}).items()
+            if account in names
+        }
+        for account in selected_accounts
+    }
+    for task_id in task_ids:
+        task = tasks.get(task_id)
+        if not task:
+            raise RuntimeError(f"未找到模块：{task_id}")
+        if period not in (task.get("frequency") or []):
+            raise RuntimeError(
+                f"{task.get('name') or task_id} 不支持{PERIOD_NAMES.get(period, period)}。"
+            )
+        source = str(task.get("account_source") or "")
+        if not any(source in sources for sources in memberships.values()):
+            raise RuntimeError(f"{task.get('name') or task_id} 不适用于所选账号。")
+
+
 @dataclass
 class PanelRun:
     id: str
@@ -271,6 +337,7 @@ class PanelRun:
     env: str
     command: list[str]
     log_path: str
+    task_names: dict[str, str] = field(default_factory=dict)
     status: str = "running"
     started_at: float = field(default_factory=time.time)
     ended_at: float | None = None
@@ -401,6 +468,7 @@ class PanelRunner:
             raise RuntimeError("已有任务正在运行，请等待完成后再启动。")
         run_id = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
         log_path = self.run_root / f"{run_id}.log"
+        names: dict[str, str] = {}
         if payload.get("mode") == "bat":
             bat_path = Path(str(payload.get("bat_path") or ""))
             if not bat_path.exists():
@@ -408,13 +476,20 @@ class PanelRunner:
             bat_path = prepare_bat_for_run(self.project_root, bat_path)
             command = build_bat_command(bat_path)
         else:
+            env_name = str(payload.get("env") or "prod")
+            task_ids = [str(item) for item in payload.get("task_ids") or []]
+            selected_accounts = [str(item) for item in payload.get("accounts") or []]
+            period = str(payload.get("period") or "")
+            options = panel_options(env_name, self.project_root)
+            validate_run_selection(task_ids, selected_accounts, period, options)
+            names = task_name_map(options)
             command = build_finance_command(
                 project_root=self.project_root,
-                env=str(payload.get("env") or "prod"),
-                task_ids=[str(item) for item in payload.get("task_ids") or []],
-                accounts=[str(item) for item in payload.get("accounts") or []],
+                env=env_name,
+                task_ids=task_ids,
+                accounts=selected_accounts,
                 shops=[str(item) for item in payload.get("shops") or []],
-                period=str(payload.get("period") or ""),
+                period=period,
                 diagnose=bool(payload.get("diagnose")),
             )
         run = PanelRun(
@@ -423,6 +498,7 @@ class PanelRunner:
             env=str(payload.get("env") or "prod"),
             command=command,
             log_path=str(log_path),
+            task_names=names,
         )
         with self.lock:
             self.runs[run_id] = run
@@ -471,10 +547,10 @@ class PanelRunner:
                     with Path(run.log_path).open("a", encoding="utf-8", errors="replace") as log:
                         log.write("用户已中止当前任务。\n")
                     text = self.read_log(run.id)
-                run.summary = summarize_run_log(text)
+                run.summary = summarize_run_log(text, run.task_names)
                 run.status = "stopped"
             else:
-                run.summary = finalize_run_summary(summarize_run_log(text), run.return_code)
+                run.summary = finalize_run_summary(summarize_run_log(text, run.task_names), run.return_code)
                 run.status = str(run.summary.get("status") or "failed")
             run.ended_at = time.time()
 
@@ -766,7 +842,8 @@ function renderFiltered() {
 }
 
 function renderAccounts() {
-  const sources = [...new Set([...document.querySelectorAll('#tasks input:checked')].map(x => x.dataset.source))];
+  const platform = document.getElementById('platform').value;
+  const sources = [...new Set(options.tasks.filter(t => t.platform === platform).map(t => t.account_source))];
   const seen = new Set();
   const values = [];
   sources.forEach(src => {
@@ -789,11 +866,27 @@ function renderAccounts() {
   document.getElementById('accounts').innerHTML = title + values.map(a =>
     `<label><input type="checkbox" value="${a}" checked>${a}</label>`
   ).join('');
+  refreshTaskAvailability();
+}
+
+function refreshTaskAvailability() {
+  const period = document.getElementById('period').value;
+  const selected = new Set(checkedValues('accounts'));
+  document.querySelectorAll('#tasks input').forEach(input => {
+    const task = options.tasks.find(item => item.id === input.value);
+    const sourceAccounts = options.accounts[task.account_source] || [];
+    const accountMatches = sourceAccounts.some(account => selected.has(account));
+    const periodMatches = (task.frequency || []).includes(period);
+    input.disabled = !accountMatches || !periodMatches;
+    if (input.disabled) input.checked = false;
+  });
 }
 
 function setChecks(id, checked) {
-  document.querySelectorAll(`#${id} input`).forEach(x => x.checked = checked);
-  if (id === 'tasks') renderAccounts();
+  document.querySelectorAll(`#${id} input`).forEach(x => {
+    if (!x.disabled) x.checked = checked;
+  });
+  if (id === 'accounts') refreshTaskAvailability();
 }
 
 function switchTab(tabName) {
@@ -812,11 +905,15 @@ async function refreshOptions() {
 
 async function startRun() {
   try {
+    const taskIds = checkedValues('tasks');
+    const accounts = checkedValues('accounts');
+    if (!taskIds.length) throw new Error('请至少选择一个可用模块。');
+    if (!accounts.length) throw new Error('请至少选择一个账号。');
     const payload = {
       env: document.getElementById('env').value,
       period: document.getElementById('period').value,
-      task_ids: checkedValues('tasks'),
-      accounts: checkedValues('accounts'),
+      task_ids: taskIds,
+      accounts: accounts,
       shops: splitShops(),
       diagnose: document.getElementById('diagnose').checked
     };
@@ -941,7 +1038,8 @@ async function selectRun(id) {
 
 document.getElementById('env').addEventListener('change', refreshOptions);
 document.getElementById('platform').addEventListener('change', renderFiltered);
-document.getElementById('tasks').addEventListener('change', renderAccounts);
+document.getElementById('accounts').addEventListener('change', refreshTaskAvailability);
+document.getElementById('period').addEventListener('change', refreshTaskAvailability);
 document.getElementById('refreshBtn').addEventListener('click', refreshRuns);
 document.getElementById('runBtn').addEventListener('click', startRun);
 document.getElementById('stopRunBtn').addEventListener('click', stopCurrentRun);
@@ -1001,7 +1099,9 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "run not found"}, HTTPStatus.NOT_FOUND)
                 return
             if kind == "business-log":
-                self._send_json({"lines": business_log_lines(self.runner.read_log(run_id))})
+                self._send_json(
+                    {"lines": business_log_lines(self.runner.read_log(run_id), run.task_names)}
+                )
                 return
             if kind == "log":
                 self._send_text(self.runner.read_log(run_id), "text/plain; charset=utf-8")

@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 from datetime import datetime
 
+import pytest
+import finance_crawler.control_panel as control_panel
+
 from finance_crawler.control_panel import (
     INDEX_HTML,
     PanelRunner,
@@ -240,6 +243,122 @@ def test_summarize_run_log_for_business_status():
             "message": "账号登录未完成，可能需要人工确认登录状态。",
         }
     ]
+
+
+def test_summarize_run_log_uses_business_task_name():
+    summary = summarize_run_log(
+        "失败明细:\n  - A20 | shein_platform_fees | 页面超时",
+        {"shein_platform_fees": "SHEIN 平台费用"},
+    )
+
+    assert summary["failed_items"][0]["task"] == "SHEIN 平台费用"
+
+
+def test_business_log_lines_uses_business_task_name():
+    lines = business_log_lines(
+        "失败明细:\n  - A20 | shein_platform_fees | 页面超时",
+        {"shein_platform_fees": "SHEIN 平台费用"},
+    )
+
+    assert "- A20 | SHEIN 平台费用 | 页面超时" in lines
+
+
+def test_validate_run_selection_rejects_wrong_account_source():
+    options = {
+        "tasks": [
+            {
+                "id": "f1",
+                "name": "SHEIN F1/F20 商家账单",
+                "account_source": "shein_f1_f20",
+                "frequency": ["monthly"],
+            }
+        ],
+        "accounts": {"shein": ["A20"], "shein_f1_f20": ["F1"]},
+    }
+
+    with pytest.raises(RuntimeError, match="不适用于所选账号"):
+        control_panel.validate_run_selection(["f1"], ["A20"], "monthly", options)
+
+
+def test_validate_run_selection_rejects_wrong_period():
+    options = {
+        "tasks": [
+            {
+                "id": "bill",
+                "name": "SHEIN 商家账单",
+                "account_source": "shein",
+                "frequency": ["monthly"],
+            }
+        ],
+        "accounts": {"shein": ["A20"]},
+    }
+
+    with pytest.raises(RuntimeError, match="不支持周度"):
+        control_panel.validate_run_selection(["bill"], ["A20"], "weekly", options)
+
+
+def test_validate_run_selection_accepts_duplicate_account_membership():
+    options = {
+        "tasks": [
+            {
+                "id": "fees",
+                "name": "SHEIN 平台费用",
+                "account_source": "shein_main_12",
+                "frequency": ["weekly"],
+            }
+        ],
+        "accounts": {"shein": ["A20"], "shein_main_12": ["A20"]},
+    }
+
+    control_panel.validate_run_selection(["fees"], ["A20"], "weekly", options)
+
+
+@pytest.mark.parametrize(
+    ("task_ids", "accounts", "message"),
+    [([], ["A20"], "请至少选择一个模块"), (["fees"], [], "请至少选择一个账号")],
+)
+def test_validate_run_selection_rejects_empty_selection(task_ids, accounts, message):
+    with pytest.raises(RuntimeError, match=message):
+        control_panel.validate_run_selection(task_ids, accounts, "weekly", {"tasks": [], "accounts": {}})
+
+
+def test_panel_runner_rejects_invalid_selection_before_starting_process(monkeypatch, tmp_path):
+    options = {
+        "tasks": [
+            {
+                "id": "f1",
+                "name": "SHEIN F1/F20 商家账单",
+                "account_source": "shein_f1_f20",
+                "frequency": ["monthly"],
+            }
+        ],
+        "accounts": {"shein": ["A20"], "shein_f1_f20": ["F1"]},
+    }
+    monkeypatch.setattr(control_panel, "panel_options", lambda env, project_root: options)
+    runner = PanelRunner(project_root=tmp_path)
+
+    with pytest.raises(RuntimeError, match="不适用于所选账号"):
+        runner.start_run(
+            {
+                "env": "prod",
+                "period": "monthly",
+                "task_ids": ["f1"],
+                "accounts": ["A20"],
+            }
+        )
+
+    assert runner.list_runs() == []
+
+
+def test_panel_recalculates_modules_from_accounts_and_period():
+    assert "function refreshTaskAvailability()" in INDEX_HTML
+    assert "document.getElementById('accounts').addEventListener('change', refreshTaskAvailability)" in INDEX_HTML
+    assert "document.getElementById('period').addEventListener('change', refreshTaskAvailability)" in INDEX_HTML
+    assert "input.disabled = !accountMatches || !periodMatches" in INDEX_HTML
+
+
+def test_select_all_tasks_skips_disabled_modules():
+    assert "if (!x.disabled) x.checked = checked" in INDEX_HTML
 
 
 def test_schedule_due_key_supports_daily_weekly_monthly():
